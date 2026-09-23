@@ -1,0 +1,155 @@
+/* Orbit-only geometry. Bootstrap owns the layout and component styling. */
+[hidden] {
+  display: none !important;
+}
+
+.symbols {
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.icon {
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.scan-button.busy .icon {
+  animation: orbit-spin 1.5s linear infinite;
+}
+
+.breadcrumb-scroll {
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.breadcrumb-scroll > * {
+  flex: 0 0 auto;
+}
+
+.explorer-map {
+  min-height: 38rem;
+}
+
+.sunburst {
+  display: block;
+  width: min(100%, 35rem);
+  height: auto;
+}
+
+.ring-guide {
+  fill: none;
+  stroke: currentColor;
+  stroke-dasharray: 2 5;
+  stroke-opacity: .04;
+}
+
+.chart-arc {
+  cursor: pointer;
+  stroke: var(--bs-card-bg);
+  stroke-width: 2.5;
+  transition: filter .12s, opacity .12s;
+}
+
+.chart-arc:hover,
+.chart-arc:focus {
+  filter: brightness(1.15);
+}
+
+.chart-arc:focus {
+  outline: none;
+  stroke: currentColor;
+  stroke-width: 4;
+}
+
+.chart-arc.dimmed {
+  opacity: .15;
+}
+
+.chart-center {
+  width: 31%;
+  aspect-ratio: 1;
+  color: var(--bs-body-color);
+}
+
+.chart-center:disabled {
+  opacity: 1;
+}
+
+.chart-center:not(:disabled):hover {
+  background: rgba(var(--bs-emphasis-color-rgb), .04) !important;
+}
+
+.chart-placeholder {
+  z-index: 2;
+}
+
+.list-panel,
+.min-width-0 {
+  min-width: 0;
+}
+
+.directory-list {
+  max-height: 32.75rem;
+  overflow-y: auto;
+}
+
+.directory-row > .icon:first-child {
+  color: var(--item-color);
+}
+
+.directory-row > .icon:last-child {
+  width: .75rem;
+  height: .75rem;
+}
+
+#scan-warning ul {
+  max-height: 10rem;
+  overflow-y: auto;
+}
+
+#toast {
+  max-width: calc(100vw - 2rem);
+}
+
+@keyframes orbit-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 991.98px) {
+  .explorer-map {
+    min-height: 28rem;
+    border-right: 0 !important;
+    border-bottom: var(--bs-border-width) var(--bs-border-style) var(--bs-border-color) !important;
+  }
+
+  .directory-list {
+    max-height: none;
+  }
+}
+
+@media (max-width: 479.98px) {
+  .explorer-map {
+    min-height: 22rem;
+  }
+
+  .sunburst {
+    max-height: 22rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-button.busy .icon {
+    animation: none;
+  }
+
+  .chart-arc {
+    transition: none;
+  }
+}

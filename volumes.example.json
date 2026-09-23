@@ -1,0 +1,22 @@
+{
+  "hostname": "host",
+  "sample_seconds": 60,
+  "scan_hours": 6,
+  "volumes": [
+    {
+      "id": "root",
+      "name": "/",
+      "path": "/host",
+      "mount": "/",
+      "group": "File systems",
+      "exclude": [
+        "dev",
+        "proc",
+        "run",
+        "sys",
+        "tmp",
+        "var/lib/docker"
+      ]
+    }
+  ]
+}

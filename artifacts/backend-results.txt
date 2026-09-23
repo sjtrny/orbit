@@ -1,0 +1,20 @@
+Orbit backend verification — 2026-09-20
+
+14 checks passed:
+
+- atomic cancelled-scan rollback
+- dense chart branch budgeting
+- default names, mount labels, and groups for arbitrary directory paths
+- HTTP request boundaries
+- literal search and file sorting
+- independent target reporting without aggregate capacity
+- tree totals, pagination, and chart remainders
+- allocated-byte accounting for sparse files and hard links
+- cancellation before traversal
+- configured exclusions and filesystem boundaries
+- symlink-root rejection
+- symlinks listed without following targets
+- unreadable-entry reporting without scan failure
+- unusual filename serialization
+
+Result: OK
