@@ -4,11 +4,11 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     ORBIT_BIND=0.0.0.0 \
-    ORBIT_CONFIG=/config/volumes.json \
+    ORBIT_HOST_ROOT=/host \
     ORBIT_DATA=/data \
     SQLITE_TMPDIR=/data/tmp
 
-RUN mkdir -p /config /data
+RUN mkdir -p /data
 COPY app.py ./
 COPY static ./static
 

@@ -22,7 +22,7 @@ const artifacts = path.resolve(__dirname, '../artifacts');
     assert.equal((await page.locator('body').innerText()).includes('Storage pool'), false);
     assert.equal(await page.locator('[data-view], #file-search, #activity-view, #help-dialog').count(), 0);
     assert.match(await page.locator('#used-summary').innerText(), /used$/);
-    pass('Single-purpose UI with all configured targets and live capacity');
+    pass('Single-purpose UI with all discovered targets and live capacity');
 
     const root = await (await page.request.get(`${base}/api/tree?volume=storage1`)).json();
     const folder = root.children.find(item => item.kind === 'directory' && item.size > 0);

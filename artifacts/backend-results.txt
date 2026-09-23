@@ -1,7 +1,10 @@
-Orbit backend verification — 2026-09-20
+Orbit backend verification — 2026-09-23
 
-14 checks passed:
+17 checks passed:
 
+- automatic mount discovery with virtual and duplicate mount filtering
+- stable target IDs and escaped mount-path decoding
+- rejection of writable host submounts
 - atomic cancelled-scan rollback
 - dense chart branch budgeting
 - default names, mount labels, and groups for arbitrary directory paths

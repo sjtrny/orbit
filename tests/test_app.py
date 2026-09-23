@@ -13,7 +13,56 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app import Handler, Monitor, Server, scan_volume
+from app import Handler, Monitor, Server, discover_config, scan_volume
+
+
+class DiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.mountinfo = Path(self.temp.name) / 'mountinfo'
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_discovers_storage_and_filters_virtual_and_duplicate_mounts(self):
+        self.mountinfo.write_text("""10 1 8:1 / /host ro - ext4 /dev/root rw
+11 10 0:1 / /host/proc ro - proc proc rw
+12 10 8:2 / /host/mnt/archive ro - ext4 /dev/sdb1 rw
+13 10 8:1 /etc /host/etc/bind ro - ext4 /dev/root rw
+14 1 8:1 /var/lib/orbit /data rw - ext4 /dev/root rw
+""")
+        config = discover_config('/host', self.mountinfo, '/data')
+        self.assertEqual([volume['id'] for volume in config['volumes']], ['system', 'archive'])
+        self.assertEqual([volume['mount'] for volume in config['volumes']], ['/', '/mnt/archive'])
+        self.assertEqual(config['volumes'][1]['group'], 'Disks')
+        self.assertEqual(config['volumes'][1]['device'], '/dev/sdb1')
+        excluded = config['volumes'][0]['exclude']
+        self.assertNotIn('mnt/archive', excluded)
+        self.assertIn('etc/bind', excluded)
+        self.assertIn('var/lib/orbit', excluded)
+
+    def test_ids_are_stable_for_duplicate_names_and_escaped_paths(self):
+        self.mountinfo.write_text("""10 1 8:1 / /host ro - ext4 /dev/root rw
+12 10 8:2 / /host/mnt/data ro - ext4 /dev/sdb1 rw
+13 10 8:3 / /host/srv/data ro - ext4 /dev/sdc1 rw
+14 10 8:4 / /host/media/My\\040Disk ro - ext4 /dev/sdd1 rw
+""")
+        first = discover_config('/host', self.mountinfo, '/data')['volumes']
+        second = discover_config('/host', self.mountinfo, '/data')['volumes']
+        self.assertEqual([volume['id'] for volume in first], [volume['id'] for volume in second])
+        ids = [volume['id'] for volume in first]
+        self.assertIn('data', ids)
+        self.assertEqual(sum(identifier.startswith('data') for identifier in ids), 2)
+        escaped = next(volume for volume in first if volume['mount'] == '/media/My Disk')
+        self.assertEqual(escaped['id'], 'My-Disk')
+        self.assertEqual(escaped['name'], 'My Disk')
+
+    def test_rejects_a_writable_host_submount(self):
+        self.mountinfo.write_text("""10 1 8:1 / /host ro - ext4 /dev/root rw
+11 10 8:2 / /host/mnt/archive rw - ext4 /dev/sdb1 rw
+""")
+        with self.assertRaisesRegex(ValueError, 'recursively read-only'):
+            discover_config('/host', self.mountinfo, '/data')
 
 
 class ScannerTests(unittest.TestCase):

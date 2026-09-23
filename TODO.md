@@ -12,6 +12,11 @@ None.
 
 ## Done
 
+- [x] DISK-010 — Discover mounted filesystems automatically and redeploy without a volume configuration file (2026-09-23).
+  - Replaced the per-target JSON file and bind mounts with one read-only host-root bind and `/proc/self/mountinfo` discovery.
+  - Filtered virtual and duplicate bind mounts, kept stable target IDs, excluded Orbit's data volume, and rejected any writable host submount.
+  - Redeployed the healthy rootless container with all 11 existing snapshots preserved and no scan jobs queued.
+
 - [x] DISK-009 — Put the minimal Compose definition directly in the README (2026-09-23).
   - Replaced the separate `compose.yaml` with a terse, validated definition in the Run section.
   - Kept the read-only root and host mount, dropped capabilities, loopback listener, and persistent data volume.

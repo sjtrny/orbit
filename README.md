@@ -6,17 +6,11 @@ A small, self-hosted disk usage viewer for Linux.
 
 - Live used and free capacity.
 - Interactive directory map and folder navigation.
-- Independent targets for `/`, mounted filesystems, and mounted disks.
+- Automatic targets for `/`, mounted filesystems, and mounted disks.
 - Atomic scan snapshots: a cancelled or failed scan keeps the last complete map.
 - Read-only operation with no file editing, moving, or deletion.
 
 ## Run
-
-Copy the example target configuration:
-
-```bash
-cp volumes.example.json volumes.json
-```
 
 Create `compose.yaml`:
 
@@ -30,7 +24,6 @@ services:
     security_opt: ["no-new-privileges:true"]
     ports: ["127.0.0.1:8080:8080"]
     volumes:
-      - ./volumes.json:/config/volumes.json:ro
       - /:/host:ro,rslave
       - orbit-data:/data
 
@@ -42,13 +35,10 @@ volumes:
 docker compose up -d --build
 ```
 
-Open <http://localhost:8080/>. The example monitors `/`.
-
-Edit `volumes.json` to add targets. Each target needs an `id` and a
-container-visible directory `path`. Host paths are available below `/host`, so
-the host mount `/mnt/archive` is `/host/mnt/archive` in the container. A disk
-must have a mounted filesystem; Orbit does not inspect raw block devices. Orbit
-has no login, so use an authenticated reverse proxy before exposing it.
+Open <http://localhost:8080/>. Orbit discovers `/` and its mounted filesystems
+when it starts; restart it after mounts change. A disk must have a mounted
+filesystem because Orbit does not inspect raw block devices. Orbit has no
+login, so use an authenticated reverse proxy before exposing it.
 
 ## State and safety
 

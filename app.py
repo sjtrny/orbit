@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import http.server
 import json
 import logging
@@ -41,6 +42,125 @@ def connect_db(*args, **kwargs):
 
 def clean_text(value):
     return os.fsdecode(value).encode("utf-8", "replace").decode("utf-8")
+
+
+VIRTUAL_FILESYSTEMS = {
+    "autofs", "binfmt_misc", "bpf", "cgroup", "cgroup2", "configfs",
+    "debugfs", "devpts", "devtmpfs", "efivarfs", "fusectl", "hugetlbfs",
+    "mqueue", "nsfs", "overlay", "proc", "pstore", "ramfs", "securityfs",
+    "selinuxfs", "squashfs", "sysfs", "tmpfs", "tracefs",
+}
+MOUNT_ESCAPES = {"040": " ", "011": "\t", "012": "\n", "134": "\\"}
+
+
+def decode_mount_field(value):
+    return re.sub(r"\\(040|011|012|134)", lambda match: MOUNT_ESCAPES[match.group(1)], value)
+
+
+def parse_mountinfo(text):
+    mounts = []
+    for line in text.splitlines():
+        try:
+            left, right = line.split(" - ", 1)
+            fields = left.split()
+            details = right.split()
+            mounts.append({
+                "major_minor": fields[2],
+                "root": decode_mount_field(fields[3]),
+                "mountpoint": decode_mount_field(fields[4]),
+                "options": fields[5].split(","),
+                "filesystem": details[0],
+                "source": decode_mount_field(details[1]),
+            })
+        except (IndexError, ValueError):
+            LOG.warning("Ignoring malformed mountinfo entry: %s", line)
+    return mounts
+
+
+def path_is_within(path, parent):
+    parent = parent.rstrip("/") or "/"
+    return path == parent or (path.startswith("/") if parent == "/" else path.startswith(parent + "/"))
+
+
+def discovered_id(mountpoint, used):
+    base = "system" if mountpoint == "/" else re.sub(r"[^a-zA-Z0-9_-]+", "-", mountpoint.rsplit("/", 1)[-1]).strip("-")
+    base = base or "mount"
+    candidate = base
+    if candidate in used:
+        candidate = f"{base}-{hashlib.sha256(mountpoint.encode()).hexdigest()[:8]}"
+    used.add(candidate)
+    return candidate
+
+
+def discover_config(host_root="/host", mountinfo_path="/proc/self/mountinfo", data_path="/data"):
+    """Discover useful storage mounts already visible below the read-only host bind."""
+    host_root = os.path.abspath(host_root)
+    data_path = os.path.abspath(data_path)
+    mounts = parse_mountinfo(Path(mountinfo_path).read_text())
+    visible = [entry for entry in mounts if path_is_within(entry["mountpoint"], host_root)]
+    root = next((entry for entry in visible if entry["mountpoint"] == host_root), None)
+    if root is None:
+        raise ValueError(f"Host root {host_root} is not a visible mount point.")
+    writable = next((entry["mountpoint"] for entry in visible if "ro" not in entry["options"]), None)
+    if writable:
+        raise ValueError(f"Host root must be recursively read-only; {writable} is writable.")
+
+    selected = []
+    seen = set()
+    for entry in sorted(visible, key=lambda item: (item["mountpoint"].count("/"), item["mountpoint"])):
+        if entry is not root and entry["filesystem"] in VIRTUAL_FILESYSTEMS:
+            continue
+        if entry is not root and any(
+            path_is_within(entry["mountpoint"], parent["mountpoint"])
+            and entry["major_minor"] == parent["major_minor"]
+            and entry["filesystem"] == parent["filesystem"]
+            for parent in selected
+        ):
+            continue
+        identity = (entry["major_minor"], entry["root"], entry["filesystem"])
+        if identity in seen:
+            continue
+        seen.add(identity)
+        selected.append(entry)
+
+    data_mount = next((entry for entry in mounts if entry["mountpoint"] == data_path), None)
+    used_ids = set()
+    volumes = []
+    for entry in selected:
+        relative = os.path.relpath(entry["mountpoint"], host_root)
+        display_mount = "/" if relative == "." else "/" + relative
+        excluded = {
+            os.path.relpath(other["mountpoint"], entry["mountpoint"])
+            for other in visible
+            if other is not entry and path_is_within(other["mountpoint"], entry["mountpoint"])
+            and other["major_minor"] == entry["major_minor"]
+        }
+        if display_mount == "/":
+            excluded.update(("dev", "proc", "run", "sys", "tmp"))
+        if data_mount and data_mount["major_minor"] == entry["major_minor"]:
+            data_root = os.path.normpath(data_mount["root"])
+            entry_root = os.path.normpath(entry["root"])
+            if path_is_within(data_root, entry_root) and data_root != entry_root:
+                excluded.add(os.path.relpath(data_root, entry_root))
+        elif path_is_within(data_path, entry["mountpoint"]) and data_path != entry["mountpoint"]:
+            excluded.add(os.path.relpath(data_path, entry["mountpoint"]))
+        volumes.append({
+            "id": discovered_id(display_mount, used_ids),
+            "name": display_mount if display_mount == "/" else display_mount.rsplit("/", 1)[-1],
+            "path": entry["mountpoint"],
+            "mount": display_mount,
+            "device": entry["source"],
+            "type": entry["filesystem"],
+            "group": "Disks" if display_mount != "/" and entry["source"].startswith("/dev/") else "File systems",
+            "exclude": sorted(path for path in excluded if path not in (".", "")),
+        })
+
+    hostname = socket.gethostname()
+    try:
+        hostname = (Path(host_root) / "etc/hostname").read_text().strip() or hostname
+    except OSError:
+        pass
+    return {"hostname": hostname, "sample_seconds": 60, "scan_hours": 6, "volumes": volumes}
 
 
 def scan_volume(volume, destination, cancel, progress):
@@ -541,19 +661,27 @@ class Server(http.server.ThreadingHTTPServer):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default=os.environ.get("ORBIT_CONFIG", "volumes.json"))
+    parser.add_argument("--config", default=os.environ.get("ORBIT_CONFIG"),
+                        help="Optional JSON target override; mounts are discovered when omitted")
+    parser.add_argument("--host-root", default=os.environ.get("ORBIT_HOST_ROOT", "/host"))
     parser.add_argument("--data", default=os.environ.get("ORBIT_DATA", "./data"))
     parser.add_argument("--host", default=os.environ.get("ORBIT_BIND", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("ORBIT_PORT", "8080")))
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    with open(args.config) as file:
-        config = json.load(file)
     # Large index builds spill sorted pages to disk. Keep that scratch space
     # beside the snapshots, not in a container's small /tmp tmpfs.
     scratch = Path(args.data).resolve() / 'tmp'
     scratch.mkdir(parents=True, exist_ok=True)
     os.environ['SQLITE_TMPDIR'] = str(scratch)
+    if args.config:
+        with open(args.config) as file:
+            config = json.load(file)
+        LOG.info("Loaded scan targets from %s", args.config)
+    else:
+        host_root = args.host_root
+        config = discover_config(host_root=host_root, data_path=args.data)
+        LOG.info("Discovered %s mounted filesystems below %s", len(config["volumes"]), host_root)
     monitor = Monitor(config, args.data)
     server = Server((args.host, args.port), Handler)
     server.monitor = monitor
