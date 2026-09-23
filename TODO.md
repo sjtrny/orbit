@@ -12,6 +12,11 @@ None.
 
 ## Done
 
+- [x] DISK-008 — Shorten the public README to match the concise style of the reference repositories (2026-09-23).
+  - Reduced the README from 597 to 237 words and made it Docker-first.
+  - Retained only features, startup, target configuration, state/safety, and check commands.
+  - Removed private deployment details and validated the documented Compose configuration.
+
 - [x] DISK-007 — Rename the project folder and repository from `disk-usage` to `orbit` (2026-09-23).
   - Moved the independent Git repository to `/workspaces/orbit` and updated all workspace links and service notes.
   - Verified Compose rendering, the healthy live container, and all seven browser interaction groups from the new path.
