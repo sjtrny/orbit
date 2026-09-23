@@ -14,6 +14,7 @@ from pathlib import Path
 import queue
 import re
 import signal
+import shutil
 import stat
 import threading
 import time
@@ -394,11 +395,7 @@ class Monitor:
         for volume_id, config in self.volumes.items():
             item = {"id": volume_id, **{k: v for k, v in config.items() if k not in ("path", "exclude")}}
             try:
-                s = os.statvfs(config["path"])
-                total = s.f_blocks * s.f_frsize
-                free = s.f_bfree * s.f_frsize
-                available = s.f_bavail * s.f_frsize
-                used = max(0, total - free)
+                total, used, available = shutil.disk_usage(config["path"])
                 item.update(total=total, used=used, available=available,
                             percent=round(100 * used / max(1, used + available), 1), online=True)
             except OSError as error:
