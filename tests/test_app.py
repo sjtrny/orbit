@@ -1,6 +1,7 @@
 """Scanner correctness and HTTP boundaries, using disposable files only."""
 import contextlib
 import http.client
+import http.server
 import json
 import os
 from pathlib import Path
@@ -9,11 +10,12 @@ import subprocess
 import sys
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app import Handler, Monitor, Server, discover_config, scan_volume
+from app import Handler, Monitor, discover_volumes, scan_volume
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -31,12 +33,11 @@ class DiscoveryTests(unittest.TestCase):
 13 10 8:1 /etc /host/etc/bind ro - ext4 /dev/root rw
 14 1 8:1 /var/lib/orbit /data rw - ext4 /dev/root rw
 """)
-        config = discover_config('/host', self.mountinfo, '/data')
-        self.assertEqual([volume['id'] for volume in config['volumes']], ['system', 'archive'])
-        self.assertEqual([volume['mount'] for volume in config['volumes']], ['/', '/mnt/archive'])
-        self.assertEqual(config['volumes'][1]['group'], 'Disks')
-        self.assertEqual(config['volumes'][1]['device'], '/dev/sdb1')
-        excluded = config['volumes'][0]['exclude']
+        volumes = discover_volumes('/host', self.mountinfo, '/data')
+        self.assertEqual(list(volumes), ['system', 'archive'])
+        self.assertEqual([volume['mount'] for volume in volumes.values()], ['/', '/mnt/archive'])
+        self.assertEqual(volumes['archive']['group'], 'Disks')
+        excluded = volumes['system']['exclude']
         self.assertNotIn('mnt/archive', excluded)
         self.assertIn('etc/bind', excluded)
         self.assertIn('var/lib/orbit', excluded)
@@ -47,14 +48,13 @@ class DiscoveryTests(unittest.TestCase):
 13 10 8:3 / /host/srv/data ro - ext4 /dev/sdc1 rw
 14 10 8:4 / /host/media/My\\040Disk ro - ext4 /dev/sdd1 rw
 """)
-        first = discover_config('/host', self.mountinfo, '/data')['volumes']
-        second = discover_config('/host', self.mountinfo, '/data')['volumes']
-        self.assertEqual([volume['id'] for volume in first], [volume['id'] for volume in second])
-        ids = [volume['id'] for volume in first]
+        first = discover_volumes('/host', self.mountinfo, '/data')
+        second = discover_volumes('/host', self.mountinfo, '/data')
+        self.assertEqual(list(first), list(second))
+        ids = list(first)
         self.assertIn('data', ids)
         self.assertEqual(sum(identifier.startswith('data') for identifier in ids), 2)
-        escaped = next(volume for volume in first if volume['mount'] == '/media/My Disk')
-        self.assertEqual(escaped['id'], 'My-Disk')
+        escaped = first['My-Disk']
         self.assertEqual(escaped['name'], 'My Disk')
 
     def test_rejects_a_writable_host_submount(self):
@@ -62,7 +62,7 @@ class DiscoveryTests(unittest.TestCase):
 11 10 8:2 / /host/mnt/archive rw - ext4 /dev/sdb1 rw
 """)
         with self.assertRaisesRegex(ValueError, 'recursively read-only'):
-            discover_config('/host', self.mountinfo, '/data')
+            discover_volumes('/host', self.mountinfo, '/data')
 
 
 class ScannerTests(unittest.TestCase):
@@ -71,7 +71,7 @@ class ScannerTests(unittest.TestCase):
         self.base = Path(self.temp.name)
         self.root = self.base / 'root'
         self.root.mkdir()
-        self.volume = {'id': 'test', 'name': 'Test', 'mount': '/', 'path': str(self.root)}
+        self.volume = {'name': 'Test', 'mount': '/', 'path': str(self.root)}
         self.db_path = self.base / 'scan.sqlite'
 
     def tearDown(self):
@@ -124,13 +124,11 @@ class ScannerTests(unittest.TestCase):
         def fake_stat(path, *args, **kwargs):
             result = original_stat(path, *args, **kwargs)
             if path == 'mounted' and kwargs.get('dir_fd') is not None:
-                values = list(result)
-                values[2] = result.st_dev + 999
-                # stat_result does not preserve st_blocks from its sequence.
-                class DifferentDevice:
-                    def __getattr__(self, key):
-                        return result.st_dev + 999 if key == 'st_dev' else getattr(result, key)
-                return DifferentDevice()
+                return SimpleNamespace(
+                    st_mode=result.st_mode, st_dev=result.st_dev + 999,
+                    st_blocks=result.st_blocks, st_size=result.st_size,
+                    st_nlink=result.st_nlink, st_ino=result.st_ino,
+                    st_mtime=result.st_mtime)
             return result
         with patch('app.os.stat', fake_stat):
             result = self.scan()
@@ -179,14 +177,12 @@ class MonitorTests(unittest.TestCase):
         self.base = Path(self.temp.name)
         self.root = self.base / 'root'
         self.root.mkdir()
-        for i in range(35):
+        for i in range(70):
             folder = self.root / f'directory-{i}'
             folder.mkdir()
             (folder / f'file-{i}').write_bytes(b'z' * (5000 + i * 1024))
-        (self.root / 'literal-100%_name').write_text('find me')
-        (self.root / 'literal-100XYname').write_text('not this')
-        self.volume = {'id': 'test', 'name': 'Test', 'mount': '/', 'path': str(self.root)}
-        self.monitor = Monitor({'hostname': 'testhost', 'volumes': [self.volume], 'scan_hours': 0}, self.base / 'data')
+        self.volume = {'name': 'Test', 'mount': '/', 'group': 'File systems', 'path': str(self.root)}
+        self.monitor = Monitor({'test': self.volume}, self.base / 'data')
         self.meta = scan_volume(self.volume, self.monitor.snapshot('test'), threading.Event(), lambda value: None)
         self.monitor.sample()
 
@@ -195,23 +191,15 @@ class MonitorTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_tree_totals_pagination_and_chart_remainders(self):
-        tree = self.monitor.tree('test', 1, limit=10)
-        self.assertEqual(tree['count'], 37)
-        self.assertEqual(len(tree['children']), 10)
+        tree = self.monitor.tree('test', 1)
+        self.assertEqual(tree['count'], 70)
+        self.assertEqual(len(tree['children']), 60)
         self.assertEqual(sum(c['size'] for c in tree['chart']['children']), tree['node']['size'])
         self.assertTrue(any(c['kind'] == 'aggregate' for c in tree['chart']['children']))
-        second = self.monitor.tree('test', 1, limit=10, offset=10)
+        second = self.monitor.tree('test', 1, offset=60)
         self.assertFalse(set(c['id'] for c in tree['children']) & set(c['id'] for c in second['children']))
         child = next(c for c in tree['children'] if c['kind'] == 'directory')
         self.assertEqual(self.monitor.tree('test', child['id'])['ancestors'][0]['id'], 1)
-
-    def test_search_is_literal_and_largest_files_are_sorted(self):
-        self.assertEqual(len(self.monitor.search('test', '100%_')['items']), 1)
-        self.assertEqual(self.monitor.search('test', "' OR 1=1 --")['items'], [])
-        results = self.monitor.search('test')['items']
-        sizes = [r['size'] for r in results]
-        self.assertEqual(sizes, sorted(sizes, reverse=True))
-        self.assertTrue(all(r['kind'] == 'file' for r in results))
 
     def test_dense_chart_keeps_the_largest_top_level_folders(self):
         for folder in self.root.glob('directory-*'):
@@ -243,22 +231,16 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(self.monitor.jobs['test']['status'], 'cancelled')
 
     def test_targets_are_independent_and_have_no_aggregate_capacity(self):
-        config = {'volumes': [self.volume, {**self.volume, 'id': 'second'}]}
-        other = Monitor(config, self.base / 'other')
+        other = Monitor({'test': self.volume, 'second': self.volume}, self.base / 'other')
         other.sample()
         status = other.status()
         self.assertEqual(len(status['volumes']), 2)
         self.assertEqual(status['volumes'][0]['total'], status['volumes'][1]['total'])
         self.assertNotIn('totals', status)
 
-    def test_name_mount_and_group_default_to_generic_paths(self):
-        other = Monitor({'volumes': [{'id': 'plain', 'path': str(self.root)}]}, self.base / 'plain')
-        self.assertEqual(other.volumes['plain']['name'], str(self.root))
-        self.assertEqual(other.volumes['plain']['mount'], str(self.root))
-        self.assertEqual(other.volumes['plain']['group'], 'File systems')
-
     def test_request_boundaries(self):
-        server = Server(('127.0.0.1', 0), Handler)
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        server.daemon_threads = True
         server.monitor = self.monitor
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

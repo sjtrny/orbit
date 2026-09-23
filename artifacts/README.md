@@ -2,7 +2,7 @@
 
 Live endpoint: <http://192.168.20.10:18008/>.
 
-- `backend-results.txt`: scanner, discovery, accounting, snapshot, query, and HTTP checks passed. The current suite has 17 checks.
+- `backend-results.txt`: scanner, discovery, accounting, snapshot, query, and HTTP checks passed. The current suite has 15 checks.
 - `browser-results.json`: the Bootstrap-based live UI passed all seven desktop/mobile interaction groups, with no uncaught browser errors.
 - `minimal-desktop.png`, `minimal-mobile.png`: the Bootstrap 5.3.8 interface with actual host data, checked with Playwright and visually inspected. No mock dataset is used.
 - `host-verification.json`: capacity and scan metadata for all 11 targets after deployment restart. All completed snapshots survived replacement.
@@ -12,11 +12,12 @@ The rootless `orbit` container is healthy. Its private bind is
 `192.168.20.10:18008 → 8080`. One recursive `/:/host` bind exposes the host
 read-only; Orbit discovered all 11 mounted targets and rejected writable host
 submounts at startup. No monitored files were written or deleted. Container
-image: `sha256:78e3f88d874134685e6559985d232d4efdc5ebd318599c49803297660917fd14`.
+image: `sha256:8f9d9ad7db3782dbecfa4e469903c2ef6a8181d0a4b339adbabfce134c94764a`.
 Persistent state is in Docker volume `orbit-data`; the current container has no
 configuration volume. The prior deployment is retained, stopped, as
-`orbit-before-auto-config`; its legacy `orbit-config` volume remains available
-for rollback. Bootstrap is served locally, and other services were unchanged.
+`orbit-before-simplify`; the older `orbit-before-auto-config` container and its
+legacy `orbit-config` volume also remain available for rollback. Bootstrap is
+served locally, and other services were unchanged.
 
 The current system snapshot indexed 2,402,300 files and reported 1,708 skipped
 entries in 79.94 seconds. These are permission/scan gaps, not a claim that all

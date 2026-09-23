@@ -4,7 +4,7 @@ const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const colors = ['#ad98e8','#70c4b8','#e4a66b','#d9859c','#76a2d9','#cbc06e','#bd7fc1','#7db685','#cb826e','#6aacbd'];
-const state = {status:null,volume:null,node:1,offset:0,tree:null,scan:null,request:0,online:false,nodes:new Map(),branches:new Map()};
+const state = {status:null,volume:null,node:1,offset:0,tree:null,request:0,online:false,nodes:new Map(),branches:new Map()};
 let pollTimer;
 let toastTimer;
 
@@ -118,7 +118,7 @@ async function refreshStatus() {
   try {
     const data = await api('/api/status');
     const first = !state.status;
-    const previousScan = state.scan;
+    const previousScan = selectedVolume()?.scan?.completed_at || null;
     state.status = data;
     state.online = true;
     $('connection-error').hidden = !data.capacity_error;
@@ -129,11 +129,11 @@ async function refreshStatus() {
       readHash();
     }
     const volume = selectedVolume();
-    state.scan = volume?.scan?.completed_at || null;
+    const completedScan = volume?.scan?.completed_at || null;
     renderStatus();
 
-    if (first || state.scan !== previousScan) {
-      if (!first && previousScan && state.scan !== previousScan) {
+    if (first || completedScan !== previousScan) {
+      if (!first && previousScan && completedScan !== previousScan) {
         state.node = 1;
         state.offset = 0;
         toast('Scan complete');
@@ -158,7 +158,6 @@ function chooseVolume(id) {
   state.offset = 0;
   state.tree = null;
   state.request++;
-  state.scan = selectedVolume()?.scan?.completed_at || null;
   emptyChart(selectedVolume()?.scan ? 'Loading…' : 'Waiting for scan');
   renderStatus();
   if (selectedVolume()?.scan) loadTree();
@@ -182,7 +181,7 @@ async function loadTree() {
   const request = ++state.request;
   const volume = state.volume;
   try {
-    const params = new URLSearchParams({volume,node:state.node,metric:'size',offset:state.offset,limit:60,depth:3});
+    const params = new URLSearchParams({volume,node:state.node,offset:state.offset});
     const data = await api(`/api/tree?${params}`);
     if (request !== state.request || volume !== state.volume) return;
     state.tree = data;
@@ -380,7 +379,6 @@ window.addEventListener('hashchange', () => {
   readHash();
   state.offset = 0;
   state.tree = null;
-  state.scan = selectedVolume()?.scan?.completed_at || null;
   if (oldVolume !== state.volume) renderStatus();
   emptyChart(selectedVolume()?.scan ? 'Loading…' : 'Waiting for scan');
   if (selectedVolume()?.scan) loadTree();

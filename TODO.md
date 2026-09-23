@@ -12,6 +12,11 @@ None.
 
 ## Done
 
+- [x] DISK-011 — Simplify the implementation by removing one-off abstractions and unused backend features (2026-09-23).
+  - Replaced the configuration wrapper with a target dictionary and removed the one-use HTTP server subclass.
+  - Removed unused search/history APIs, capacity-history writes, variable tree modes, redundant response fields, and duplicate frontend scan state.
+  - Reduced the implementation and tests by 110 lines, redeployed it, and preserved all 11 snapshots without queuing scans.
+
 - [x] DISK-010 — Discover mounted filesystems automatically and redeploy without a volume configuration file (2026-09-23).
   - Replaced the per-target JSON file and bind mounts with one read-only host-root bind and `/proc/self/mountinfo` discovery.
   - Filtered virtual and duplicate bind mounts, kept stable target IDs, excluded Orbit's data volume, and rejected any writable host submount.

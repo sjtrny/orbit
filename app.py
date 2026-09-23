@@ -14,7 +14,6 @@ from pathlib import Path
 import queue
 import re
 import signal
-import socket
 import stat
 import threading
 import time
@@ -22,6 +21,9 @@ from urllib.parse import parse_qs, urlsplit
 
 STATIC = Path(__file__).parent / "static"
 LOG = logging.getLogger("orbit")
+SAMPLE_SECONDS = 60
+SCAN_SECONDS = 6 * 3600
+PAGE_SIZE = 60
 SCHEMA = """
 CREATE TABLE nodes (
  id INTEGER PRIMARY KEY, parent INTEGER, name TEXT NOT NULL, path TEXT NOT NULL,
@@ -88,11 +90,10 @@ def discovered_id(mountpoint, used):
     candidate = base
     if candidate in used:
         candidate = f"{base}-{hashlib.sha256(mountpoint.encode()).hexdigest()[:8]}"
-    used.add(candidate)
     return candidate
 
 
-def discover_config(host_root="/host", mountinfo_path="/proc/self/mountinfo", data_path="/data"):
+def discover_volumes(host_root="/host", mountinfo_path="/proc/self/mountinfo", data_path="/data"):
     """Discover useful storage mounts already visible below the read-only host bind."""
     host_root = os.path.abspath(host_root)
     data_path = os.path.abspath(data_path)
@@ -124,8 +125,7 @@ def discover_config(host_root="/host", mountinfo_path="/proc/self/mountinfo", da
         selected.append(entry)
 
     data_mount = next((entry for entry in mounts if entry["mountpoint"] == data_path), None)
-    used_ids = set()
-    volumes = []
+    volumes = {}
     for entry in selected:
         relative = os.path.relpath(entry["mountpoint"], host_root)
         display_mount = "/" if relative == "." else "/" + relative
@@ -144,23 +144,15 @@ def discover_config(host_root="/host", mountinfo_path="/proc/self/mountinfo", da
                 excluded.add(os.path.relpath(data_root, entry_root))
         elif path_is_within(data_path, entry["mountpoint"]) and data_path != entry["mountpoint"]:
             excluded.add(os.path.relpath(data_path, entry["mountpoint"]))
-        volumes.append({
-            "id": discovered_id(display_mount, used_ids),
+        volume_id = discovered_id(display_mount, volumes)
+        volumes[volume_id] = {
             "name": display_mount if display_mount == "/" else display_mount.rsplit("/", 1)[-1],
             "path": entry["mountpoint"],
             "mount": display_mount,
-            "device": entry["source"],
-            "type": entry["filesystem"],
             "group": "Disks" if display_mount != "/" and entry["source"].startswith("/dev/") else "File systems",
             "exclude": sorted(path for path in excluded if path not in (".", "")),
-        })
-
-    hostname = socket.gethostname()
-    try:
-        hostname = (Path(host_root) / "etc/hostname").read_text().strip() or hostname
-    except OSError:
-        pass
-    return {"hostname": hostname, "sample_seconds": 60, "scan_hours": 6, "volumes": volumes}
+        }
+    return volumes
 
 
 def scan_volume(volume, destination, cancel, progress):
@@ -187,7 +179,7 @@ def scan_volume(volume, destination, cancel, progress):
     def report(force=False):
         nonlocal last_progress
         if force or time.monotonic() - last_progress > 0.25:
-            progress({**counts, "elapsed": round(time.time() - start, 1)})
+            progress({"files": counts["files"], "bytes": counts["bytes"]})
             last_progress = time.monotonic()
 
     def flush():
@@ -270,7 +262,6 @@ def scan_volume(volume, destination, cancel, progress):
         connection.commit()
         # IDs are parent-before-child. Fold directory totals bottom-up without
         # keeping the full file tree in RAM, even on multi-million-file disks.
-        progress({**counts, "phase": "Summarising", "elapsed": round(time.time() - start, 1)})
         cursor = connection.execute("SELECT id,parent FROM nodes WHERE kind='directory' ORDER BY id DESC")
         for node_id, parent_id in cursor:
             if cancel.is_set():
@@ -282,9 +273,7 @@ def scan_volume(volume, destination, cancel, progress):
                   files=files+(SELECT files FROM nodes WHERE id=?),
                   dirs=dirs+1+(SELECT dirs FROM nodes WHERE id=?) WHERE id=?""",
                                    (node_id, node_id, node_id, node_id, parent_id))
-        connection.executescript("""CREATE INDEX nodes_parent ON nodes(parent,size DESC);
-          CREATE INDEX nodes_largest ON nodes(kind,size DESC);
-          CREATE INDEX nodes_apparent ON nodes(kind,apparent DESC);""")
+        connection.execute("CREATE INDEX nodes_parent ON nodes(parent,size DESC)")
         result = {**counts, "started_at": start, "completed_at": time.time(),
                   "duration": round(time.time() - start, 2), "errors": errors}
         connection.execute("INSERT INTO metadata VALUES ('scan',?)", (json.dumps(result),))
@@ -296,38 +285,18 @@ def scan_volume(volume, destination, cancel, progress):
 
 
 class Monitor:
-    def __init__(self, config, data_dir):
-        self.config = config
-        configured = []
-        for source in config["volumes"]:
-            target = dict(source)
-            if "id" not in target or "path" not in target:
-                raise ValueError("Each scan target needs an ID and directory path.")
-            target.setdefault("mount", target["path"])
-            target.setdefault("name", target["mount"])
-            target.setdefault("group", "File systems")
-            configured.append(target)
-        self.volumes = {target["id"]: target for target in configured}
-        if not self.volumes or len(self.volumes) != len(configured):
-            raise ValueError("Configure at least one scan target, with unique IDs.")
-        for key in self.volumes:
-            if not re.fullmatch(r"[a-zA-Z0-9_-]+", key):
-                raise ValueError("Target IDs may only use letters, digits, underscores and hyphens.")
+    def __init__(self, volumes, data_dir):
+        if not volumes or any(not re.fullmatch(r"[a-zA-Z0-9_-]+", key) for key in volumes):
+            raise ValueError("At least one target with a safe ID is required.")
+        self.volumes = volumes
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.lock = threading.RLock()
+        self.lock = threading.Lock()
         self.queue = queue.Queue()
         self.stop = threading.Event()
         self.jobs = {}
         self.capacity = []
-        self.sampled_at = None
         self.capacity_error = None
-        self.history_path = self.data_dir / "history.sqlite"
-        with connect_db(self.history_path) as db:
-            db.executescript("""CREATE TABLE IF NOT EXISTS samples (
-              volume TEXT, time REAL, total INTEGER, used INTEGER, available INTEGER,
-              PRIMARY KEY(volume,time));
-              CREATE INDEX IF NOT EXISTS samples_time ON samples(time);""")
         self.worker = threading.Thread(target=self.work, name="scanner", daemon=True)
         self.sampler = threading.Thread(target=self.sample_loop, name="capacity", daemon=True)
 
@@ -367,7 +336,7 @@ class Monitor:
             if previous.get("status") in ("queued", "scanning", "cancelling"):
                 return self.public_job(previous)
             job = {"status": "queued", "queued_at": time.time(), "cancel": threading.Event(),
-                   "files": 0, "directories": 0, "bytes": 0, "skipped": 0}
+                   "files": 0, "bytes": 0}
             self.jobs[volume_id] = job
             self.queue.put((volume_id, job))
             return self.public_job(job)
@@ -397,7 +366,7 @@ class Monitor:
                 if job["cancel"].is_set():
                     continue
                 with self.lock:
-                    job.update(status="scanning", started_at=time.time(), phase="Scanning")
+                    job.update(status="scanning", started_at=time.time())
                 temp.unlink(missing_ok=True)
                 def progress(values):
                     with self.lock:
@@ -421,46 +390,35 @@ class Monitor:
                 self.queue.task_done()
 
     def sample(self):
-        timestamp = time.time()
         volumes = []
-        rows = []
         for volume_id, config in self.volumes.items():
-            item = {k: v for k, v in config.items() if k not in ("path", "exclude")}
+            item = {"id": volume_id, **{k: v for k, v in config.items() if k not in ("path", "exclude")}}
             try:
                 s = os.statvfs(config["path"])
                 total = s.f_blocks * s.f_frsize
                 free = s.f_bfree * s.f_frsize
                 available = s.f_bavail * s.f_frsize
                 used = max(0, total - free)
-                reserved = max(0, free - available)
-                item.update(total=total, used=used, available=available, reserved=reserved,
+                item.update(total=total, used=used, available=available,
                             percent=round(100 * used / max(1, used + available), 1), online=True)
-                rows.append((volume_id, timestamp, total, used, available))
             except OSError as error:
                 item.update(online=False, error=error.strerror)
             volumes.append(item)
-        with connect_db(self.history_path, timeout=20) as db:
-            db.executemany("INSERT INTO samples VALUES (?,?,?,?,?)", rows)
-            db.execute("DELETE FROM samples WHERE time < ?", (timestamp - 30 * 86400,))
         with self.lock:
             self.capacity = volumes
-            self.sampled_at = timestamp
             self.capacity_error = None
 
     def sample_loop(self):
-        interval = max(10, int(self.config.get("sample_seconds", 60)))
-        scan_hours = max(0, float(self.config.get("scan_hours", 6)))
-        while not self.stop.wait(interval):
+        while not self.stop.wait(SAMPLE_SECONDS):
             try:
                 self.sample()
-                if scan_hours:
-                    for volume_id in self.volumes:
-                        meta = self.scan_metadata(volume_id)
-                        with self.lock:
-                            job = self.jobs.get(volume_id, {})
-                            retry_after = max(meta["completed_at"] if meta else 0, job.get("queued_at", 0))
-                        if time.time() - retry_after >= scan_hours * 3600:
-                            self.enqueue(volume_id)
+                for volume_id in self.volumes:
+                    meta = self.scan_metadata(volume_id)
+                    with self.lock:
+                        job = self.jobs.get(volume_id, {})
+                        retry_after = max(meta["completed_at"] if meta else 0, job.get("queued_at", 0))
+                    if time.time() - retry_after >= SCAN_SECONDS:
+                        self.enqueue(volume_id)
             except Exception as error:
                 with self.lock:
                     self.capacity_error = str(error)
@@ -473,79 +431,48 @@ class Monitor:
         for v in volumes:
             v["scan"] = self.scan_metadata(v["id"])
             v["job"] = jobs.get(v["id"], {"status": "idle"})
-        return {"hostname": self.config.get("hostname", socket.gethostname()),
-                "sampled_at": self.sampled_at, "capacity_error": self.capacity_error,
-                "scan_hours": self.config.get("scan_hours", 6), "sample_seconds": self.config.get("sample_seconds", 60),
-                "volumes": volumes}
+        return {"capacity_error": self.capacity_error, "volumes": volumes}
 
-    @staticmethod
-    def node(row):
-        return dict(row) if row is not None else None
-
-    def tree(self, volume_id, node_id, metric="size", offset=0, limit=100, depth=3):
-        metric = "apparent" if metric == "apparent" else "size"
+    def tree(self, volume_id, node_id, offset=0):
         with contextlib.closing(self.connect_snapshot(volume_id)) as db:
             db.execute("BEGIN")  # Keep one coherent snapshot throughout this request.
-            current = self.node(db.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone())
-            if not current:
+            row = db.execute("SELECT id,parent,name,kind,size FROM nodes WHERE id=?", (node_id,)).fetchone()
+            if row is None:
                 raise KeyError("Folder not found")
+            current = dict(row)
             ancestors = []
             parent = current["parent"]
             while parent:
-                ancestor = self.node(db.execute("SELECT * FROM nodes WHERE id=?", (parent,)).fetchone())
-                ancestors.append({k: ancestor[k] for k in ("id", "name", "path")})
+                ancestor = dict(db.execute(
+                    "SELECT id,parent,name,kind,size FROM nodes WHERE id=?", (parent,)).fetchone())
+                ancestors.append({k: ancestor[k] for k in ("id", "name")})
                 parent = ancestor["parent"]
             count = db.execute("SELECT COUNT(*) AS n FROM nodes WHERE parent=?", (node_id,)).fetchone()['n']
-            children = [dict(r) for r in db.execute(f"SELECT * FROM nodes WHERE parent=? ORDER BY {metric} DESC,name LIMIT ? OFFSET ?",
-                                                   (node_id, limit, offset))]
-            budget = [500]
+            children = [dict(r) for r in db.execute(
+                "SELECT id,parent,name,kind,size FROM nodes WHERE parent=? ORDER BY size DESC,name LIMIT ? OFFSET ?",
+                (node_id, PAGE_SIZE, offset))]
+            budget = 500
             def branch(item, remaining):
-                if remaining <= 0 or item["kind"] != "directory" or budget[0] <= 0:
+                nonlocal budget
+                if remaining <= 0 or item["kind"] != "directory" or budget <= 0:
                     return item
-                rows = db.execute(f"SELECT * FROM nodes WHERE parent=? AND {metric}>0 ORDER BY {metric} DESC,name LIMIT ?",
-                                  (item["id"], min(24, budget[0]))).fetchall()
+                rows = db.execute(
+                    "SELECT id,parent,name,kind,size FROM nodes WHERE parent=? AND size>0 ORDER BY size DESC,name LIMIT ?",
+                    (item["id"], min(24, budget))).fetchall()
                 # Reserve siblings before expanding descendants, so a deep
                 # first branch cannot hide the other large top-level folders.
-                budget[0] -= len(rows)
-                nodes = []
-                for row in rows:
-                    nodes.append(branch(dict(row), remaining - 1))
-                shown = sum(n[metric] for n in nodes)
-                rest = max(0, item[metric] - shown)
+                budget -= len(rows)
+                nodes = [branch(dict(row), remaining - 1) for row in rows]
+                shown = sum(node["size"] for node in nodes)
+                rest = max(0, item["size"] - shown)
                 if rest:
                     nodes.append({"id": f"other-{item['id']}", "name": "Other items & directory data",
-                                  "size": rest if metric == "size" else 0, "apparent": rest if metric == "apparent" else 0,
-                                  "kind": "aggregate", "parent": item["id"], "path": item["path"]})
+                                  "size": rest, "kind": "aggregate", "parent": item["id"]})
                 item["children"] = nodes
                 return item
-            chart = branch(dict(current), depth)
+            chart = branch(dict(current), 3)
             return {"node": current, "ancestors": list(reversed(ancestors)), "children": children,
-                    "count": count, "offset": offset, "chart": chart, "scan": self.scan_metadata_from(db)}
-
-    @staticmethod
-    def scan_metadata_from(db):
-        return json.loads(db.execute("SELECT value FROM metadata WHERE key='scan'").fetchone()['value'])
-
-    def search(self, volume_id, query="", metric="size", limit=100):
-        metric = "apparent" if metric == "apparent" else "size"
-        with contextlib.closing(self.connect_snapshot(volume_id)) as db:
-            db.execute("BEGIN")
-            if query:
-                escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                rows = db.execute(f"SELECT * FROM nodes WHERE name LIKE ? ESCAPE '\\' ORDER BY {metric} DESC LIMIT ?",
-                                  (f"%{escaped}%", limit))
-            else:
-                rows = db.execute(f"SELECT * FROM nodes WHERE kind='file' ORDER BY {metric} DESC LIMIT ?", (limit,))
-            return {"items": [dict(r) for r in rows], "limit": limit, "query": query, "scan": self.scan_metadata_from(db)}
-
-    def history(self, volume_id):
-        if volume_id not in self.volumes:
-            raise KeyError("Unknown target")
-        with connect_db(self.history_path, timeout=10) as db:
-            rows = db.execute("""SELECT MAX(time), AVG(used), AVG(available), MAX(total)
-                FROM samples WHERE volume=? AND time>? GROUP BY CAST(time/900 AS INTEGER)
-                ORDER BY MAX(time)""", (volume_id, time.time() - 86400)).fetchall()
-        return {"points": [{"time": r[0], "used": round(r[1]), "available": round(r[2]), "total": r[3]} for r in rows]}
+                    "count": count, "offset": offset, "chart": chart}
 
     def close(self):
         self.stop.set()
@@ -560,6 +487,10 @@ class Monitor:
 
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "Orbit"
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(15)
 
     def log_message(self, fmt, *args):
         if args and str(args[1] if len(args) > 1 else "").startswith(("4", "5")):
@@ -604,12 +535,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if url.path == "/api/status":
             return self.respond(200, monitor.status())
         if url.path == "/api/tree":
-            return self.respond(200, monitor.tree(arg("volume"), bounded("node", 1, 1, 2**63-1), arg("metric"),
-                                                   bounded("offset", 0, 0, 10**9), bounded("limit", 100, 1, 500), bounded("depth", 3, 1, 4)))
-        if url.path == "/api/search":
-            return self.respond(200, monitor.search(arg("volume"), arg("q")[:200], arg("metric"), bounded("limit", 100, 1, 500)))
-        if url.path == "/api/history":
-            return self.respond(200, monitor.history(arg("volume")))
+            return self.respond(200, monitor.tree(
+                arg("volume"), bounded("node", 1, 1, 2**63 - 1), bounded("offset", 0, 0, 10**9)))
         assets = {
             "/": "index.html",
             "/app.js": "app.js",
@@ -649,20 +576,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.respond(500, {"error": "Could not update scan"})
 
 
-class Server(http.server.ThreadingHTTPServer):
-    daemon_threads = True
-    request_queue_size = 64
-
-    def get_request(self):
-        connection, address = super().get_request()
-        connection.settimeout(15)
-        return connection, address
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default=os.environ.get("ORBIT_CONFIG"),
-                        help="Optional JSON target override; mounts are discovered when omitted")
     parser.add_argument("--host-root", default=os.environ.get("ORBIT_HOST_ROOT", "/host"))
     parser.add_argument("--data", default=os.environ.get("ORBIT_DATA", "./data"))
     parser.add_argument("--host", default=os.environ.get("ORBIT_BIND", "127.0.0.1"))
@@ -674,16 +589,11 @@ def main():
     scratch = Path(args.data).resolve() / 'tmp'
     scratch.mkdir(parents=True, exist_ok=True)
     os.environ['SQLITE_TMPDIR'] = str(scratch)
-    if args.config:
-        with open(args.config) as file:
-            config = json.load(file)
-        LOG.info("Loaded scan targets from %s", args.config)
-    else:
-        host_root = args.host_root
-        config = discover_config(host_root=host_root, data_path=args.data)
-        LOG.info("Discovered %s mounted filesystems below %s", len(config["volumes"]), host_root)
-    monitor = Monitor(config, args.data)
-    server = Server((args.host, args.port), Handler)
+    volumes = discover_volumes(host_root=args.host_root, data_path=args.data)
+    LOG.info("Discovered %s mounted filesystems below %s", len(volumes), args.host_root)
+    monitor = Monitor(volumes, args.data)
+    server = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
+    server.daemon_threads = True
     server.monitor = monitor
     def stop_server(*_):
         threading.Thread(target=server.shutdown, daemon=True).start()
