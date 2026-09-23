@@ -3,7 +3,7 @@
 ## Outcome and context
 
 - **Desired outcome:** A DaisyDisk-style web app that monitors the physical host's storage, with real capacity data and an interactive directory map.
-- **Working location:** `/workspaces/disk-usage/`.
+- **Working location:** `/workspaces/orbit/`.
 - **Constraints:** Read-only host access. Do not alter existing host services or delete monitored files.
 
 ## In progress
@@ -11,6 +11,10 @@
 None.
 
 ## Done
+
+- [x] DISK-007 — Rename the project folder and repository from `disk-usage` to `orbit` (2026-09-23).
+  - Moved the independent Git repository to `/workspaces/orbit` and updated all workspace links and service notes.
+  - Verified Compose rendering, the healthy live container, and all seven browser interaction groups from the new path.
 
 - [x] DISK-006 — Create the project Git repository and portable Docker/Compose packaging (2026-09-23).
   - Added a hardened Compose service, generic example configuration, persistent data volume, and runtime-only configuration injection.
