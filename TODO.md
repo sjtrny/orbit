@@ -12,6 +12,10 @@ None.
 
 ## Done
 
+- [x] DISK-009 — Put the minimal Compose definition directly in the README (2026-09-23).
+  - Replaced the separate `compose.yaml` with a terse, validated definition in the Run section.
+  - Kept the read-only root and host mount, dropped capabilities, loopback listener, and persistent data volume.
+
 - [x] DISK-008 — Shorten the public README to match the concise style of the reference repositories (2026-09-23).
   - Reduced the README from 597 to 237 words and made it Docker-first.
   - Retained only features, startup, target configuration, state/safety, and check commands.
@@ -22,7 +26,7 @@ None.
   - Verified Compose rendering, the healthy live container, and all seven browser interaction groups from the new path.
 
 - [x] DISK-006 — Create the project Git repository and portable Docker/Compose packaging (2026-09-23).
-  - Added a hardened Compose service, generic example configuration, persistent data volume, and runtime-only configuration injection.
+  - Added hardened Docker packaging, generic example configuration, persistent data volume, and runtime-only configuration injection.
   - The image contains no host-specific mount list; the host helper uses a separate read-only `orbit-config` volume.
   - Initialized the independent repository on `main`; ignored host configuration, scan data, caches, and generated browser artifacts.
   - Verified the image build, Compose rendering, 14 backend checks, seven live browser groups, all 11 read-only host binds, and snapshot persistence.
