@@ -12,6 +12,11 @@ None.
 
 ## Done
 
+- [x] DISK-012 — Publish Orbit to GHCR automatically on updates to `main` (2026-11-08).
+  - Added the [publishing workflow](.github/workflows/publish.yml) using `GITHUB_TOKEN`, with backend checks and Linux AMD64/ARM64 images tagged `latest` and `sha-<commit>`.
+  - The public [GHCR package](https://github.com/users/sjtrny/packages/container/package/orbit) is linked to the source repository. The README Compose example now pulls it directly.
+  - [Publication and verification passed](https://github.com/sjtrny/orbit/actions/runs/42536823651): 15 backend checks before publishing and inside each published architecture. Anonymous registry access and an image pull with empty Docker credentials succeeded.
+
 - [x] DISK-011 — Simplify the implementation by removing one-off abstractions and unused backend features (2026-09-23).
   - Replaced the configuration wrapper with a target dictionary and removed the one-use HTTP server subclass.
   - Removed unused search/history APIs, capacity-history writes, variable tree modes, redundant response fields, and duplicate frontend scan state.
