@@ -2,6 +2,10 @@
 
 A small, self-hosted disk usage viewer for Linux.
 
+![Orbit disk usage interface](docs/screenshot.png)
+
+*Screenshot uses example data.*
+
 ## Features
 
 - Live used and free capacity.
