@@ -21,7 +21,7 @@ Create `compose.yaml`:
 ```yaml
 services:
   orbit:
-    build: .
+    image: ghcr.io/sjtrny/orbit:latest
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
@@ -36,8 +36,12 @@ volumes:
 ```
 
 ```bash
-docker compose up -d --build
+docker compose up -d --pull always
 ```
+
+Updates to `main` automatically publish Linux AMD64/ARM64 images tagged `latest`
+and `sha-<commit>`. The image is public; no registry login is needed. Run the
+command above again to update your container.
 
 Open <http://localhost:8080/>. Orbit discovers `/` and its mounted filesystems
 when it starts; restart it after mounts change. A disk must have a mounted

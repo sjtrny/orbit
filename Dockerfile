@@ -1,5 +1,8 @@
 FROM python:3.13-slim
 
+LABEL org.opencontainers.image.source="https://github.com/sjtrny/orbit" \
+    org.opencontainers.image.description="A small, self-hosted disk usage viewer for Linux."
+
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
