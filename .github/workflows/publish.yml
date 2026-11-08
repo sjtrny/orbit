@@ -65,9 +65,12 @@ jobs:
         env:
           IMAGE: ghcr.io/sjtrny/orbit@${{ steps.build.outputs.digest }}
         run: |
-          for platform in linux/amd64 linux/arm64; do
-            docker run --rm --platform "$platform" --read-only --tmpfs /tmp \
+          manifest=$(docker buildx imagetools inspect "$IMAGE" --raw)
+          for architecture in amd64 arm64; do
+            digest=$(jq -er --arg arch "$architecture" \
+              '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest' <<< "$manifest")
+            docker run --rm --platform "linux/$architecture" --read-only --tmpfs /tmp \
               --cap-drop ALL --security-opt no-new-privileges \
               --mount "type=bind,source=$PWD/tests,target=/tests,readonly" \
-              "$IMAGE" python -m unittest discover -s /tests -v
+              "ghcr.io/sjtrny/orbit@$digest" python -m unittest discover -s /tests -v
           done
