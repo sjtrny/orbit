@@ -6,11 +6,13 @@
 - **Working location:** `/workspaces/orbit/`.
 - **Constraints:** Read-only host access. Do not alter existing host services or delete monitored files.
 
-## In progress
-
-None.
-
 ## Done
+
+- [x] DISK-013 — Move Orbit to rootful Docker for Portainer management and serve it at `orbit.local` (2026-11-09).
+  - The rootful container uses the published GHCR image. Caddy serves `https://orbit.local/`, with automatic LAN hostname discovery and HTTP redirection.
+  - Preserved all 11 completed maps; retained the stopped rootless deployment and its original data for rollback.
+  - Private, read-only mounts prevent later Docker mount changes from entering the storage view. The host deployment helper still discovers filesystem targets automatically.
+  - Verified database copies and integrity, HTTPS routing, LAN discovery, restart recovery, and seven desktop/mobile browser interaction groups.
 
 - [x] DISK-012 — Publish Orbit to GHCR automatically on updates to `main` (2026-11-08).
   - Added the [publishing workflow](.github/workflows/publish.yml) using `GITHUB_TOKEN`, with backend checks and Linux AMD64/ARM64 images tagged `latest` and `sha-<commit>`.
